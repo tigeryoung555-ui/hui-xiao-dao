@@ -132,7 +132,7 @@
       <button class="btn" onclick="doReg()">注 册</button>
       <div class="auth-switch">已有账号？<a onclick="showLogin()">返回登录</a></div>
     </div>
-    <div class="auth-tip">⚠️ 本平台为本地演示版，数据仅保存在你当前浏览器（localStorage），不会上传。注册即同意以学号作为唯一标识。</div>
+    <div class="auth-tip">📌 你的学习记录保存在本浏览器；<b>每次考核结束后，会把「学号、答对题数、四维得分」这一条汇总成绩上传给任课教师</b>，用于课堂学情分析。<br>个人作答过程、提问内容与浏览记录<b>不会上传</b>。教师端需口令方可查看。</div>
   </div>
 </div>
 
@@ -150,6 +150,7 @@
       <div class="uname" id="side-name">—</div>
       <div id="side-id" style="color:var(--sub)">—</div>
       <button class="btn ghost sm" style="margin-top:10px" onclick="logout()">退出登录</button>
+      <a href="teacher.html" style="display:block;margin-top:8px;font-size:12px;color:var(--sub);text-decoration:none;text-align:center;">教师入口 →</a>
     </div>
   </div>
   <div class="main">
@@ -358,6 +359,31 @@ function rec(){try{return JSON.parse(localStorage.getItem(R_KEY)||"{}")}catch(e)
 function saveRec(a){localStorage.setItem(R_KEY,JSON.stringify(a))}
 function hash(s){let h=0;for(let i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))>>>0}return h.toString(16)}
 function toast(msg){const t=$("#toast");t.textContent=msg;t.classList.add("show");setTimeout(function(){t.classList.remove("show")},2200)}
+
+/* ===== 学情成绩上报（只传汇总行，失败不阻塞答题） =====
+   上报内容：学号、姓名、答对题数、总题数、四维得分、错题数、日期
+   不上报：个人作答明细、AI 提问内容、浏览记录
+   同一学号同一天重复交卷由服务端覆盖，只保留最后一次
+*/
+function reportScore(score,total,dims,wrong){
+  try{
+    if(typeof fetch!=="function") return;
+    if(location.protocol==="file:") return;   // 本地直开时没有后端，静默跳过
+    let s;try{s=JSON.parse(localStorage.getItem(S_KEY))}catch(e){return}
+    if(!s||!s.id) return;
+    fetch(API_BASE+"/api/report",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        sid:s.id, name:s.name||"",
+        score:score, total:total,
+        dims:dims||{},
+        wrong:typeof wrong==="number"?wrong:Math.max(0,(total||0)-(score||0)),
+        date:new Date().toISOString().slice(0,10)
+      })
+    }).catch(function(){});   // 上报失败不影响学生使用，不弹任何提示
+  }catch(e){}
+}
 
 /* ===== 认证 ===== */
 function showReg(){$("#login-form").classList.add("hidden");$("#reg-form").classList.remove("hidden")}
@@ -683,9 +709,11 @@ function gradeExam(){
   QUIZ.forEach(function(q,i){ if(parseInt($("#e"+i).dataset.pick)!==q.ans){ mistakes.push(q.q+"（正确答案："+q.opts[q.ans]+"）") }});
   a[s.id].exam={score:right,total:QUIZ.length,date:new Date().toISOString().slice(0,10),dims:dims};
   saveRec(a);renderHome();
+  reportScore(right,QUIZ.length,dims,QUIZ.length-right);   // 上报学情汇总（失败不阻塞）
   const weak=Object.entries(dims).sort(function(a,b){return a[1]-b[1]})[0][0];
   let html2='<h3>📊 考核结果</h3><div class="radar-wrap"><div id="radar-exam"></div><div class="dim-list"></div></div>';
   html2+='<p style="margin-top:14px">总分正确率 <b style="color:#2f6fed">'+right+'/'+QUIZ.length+'</b>（'+Math.round(right/QUIZ.length*100)+'%）。</p>';
+  html2+='<p style="margin-top:6px;font-size:12px;color:var(--sub)">📌 本次成绩已同步给任课教师（仅含分数与四维得分，不含作答过程）。</p>';
   html2+='<div id="exam-diagnosis" style="margin-top:14px;padding:14px;border-radius:10px;background:#f6f8fc;font-size:14px">智能体正在生成个性化诊断…</div>';
   $("#exam-box").innerHTML=html2;
   drawRadar("#radar-exam",dims,"#exam-box .dim-list");
