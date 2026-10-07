@@ -75,6 +75,15 @@
   .bubble.bot .obe{display:inline-block;font-size:11px;color:var(--brand-d);background:#eef3ff;padding:1px 7px;border-radius:6px;margin-top:6px}
   .chat-input{display:flex;gap:10px;margin-top:14px}
   .chat-input input{flex:1;padding:11px 14px;border:1px solid var(--line);border-radius:10px;font-size:14px}
+  /* 模型回答的 Markdown 渲染 */
+  .md-h{font-weight:600;font-size:14px;color:#2f6fed;margin:8px 0 4px}
+  .md-p{margin:4px 0;line-height:1.65}
+  .md-ul,.md-ol{margin:6px 0;padding-left:20px;line-height:1.65}
+  .md-ul{list-style:disc}
+  .md-ol{list-style:decimal}
+  .bubble.bot code{background:#eef1f6;padding:1px 5px;border-radius:4px;font-size:13px}
+  .grounded{margin:2px 0 12px;padding:8px 12px;border-left:3px solid #c8d4ea;background:#f6f8fc;border-radius:0 8px 8px 0;font-size:12px;color:#6b7382}
+  #online-tag{cursor:pointer}
   .radar-wrap{display:flex;gap:30px;flex-wrap:wrap;align-items:center}
   .dim-list{font-size:14px;min-width:200px}
   .dim-list div{margin-bottom:10px}
@@ -342,7 +351,7 @@ const U_KEY="hxdao_users", S_KEY="hxdao_session", R_KEY="hxdao_records";
 const $ = function(s){return document.querySelector(s)};
 function users(){return JSON.parse(localStorage.getItem(U_KEY)||"[]")}
 function saveUsers(u){localStorage.setItem(U_KEY,JSON.stringify(u))}
-function rec(){return JSON.parse(localStorage.getItem(R_KEY)||"{}")}
+function rec(){try{return JSON.parse(localStorage.getItem(R_KEY)||"{}")}catch(e){return {}}}
 function saveRec(a){localStorage.setItem(R_KEY,JSON.stringify(a))}
 function hash(s){let h=0;for(let i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))>>>0}return h.toString(16)}
 function toast(msg){const t=$("#toast");t.textContent=msg;t.classList.add("show");setTimeout(function(){t.classList.remove("show")},2200)}
@@ -476,10 +485,11 @@ function startQuiz(bid){
   $("#quiz-box").innerHTML=html;
 }
 function pick(sid,i,j,bid){
-  const q=QUIZ.filter(BANKS.find(function(b){return b.id===bid}).filter)[i];
-  for(let k=0;k<q.opts.length;k++)$("#"+sid+"_"+k).classList.remove("sel");
-  $("#"+sid+"_"+j).classList.add("sel");
-  $("#"+sid).dataset.pick=j;
+  const bank=BANKS.find(function(b){return b.id===bid});if(!bank)return;
+  const q=QUIZ.filter(bank.filter)[i];if(!q)return;
+  for(let k=0;k<q.opts.length;k++){const el=$("#"+sid+"_"+k);if(el)el.classList.remove("sel")}
+  const chosen=$("#"+sid+"_"+j);if(chosen)chosen.classList.add("sel");
+  const box=$("#"+sid);if(box)box.dataset.pick=j;
 }
 function gradeQuiz(bid){
   const qs=QUIZ.filter(BANKS.find(function(b){return b.id===bid}).filter);
@@ -488,7 +498,7 @@ function gradeQuiz(bid){
     const sid="q"+i;const pickIdx=parseInt($("#"+sid).dataset.pick);
     const ex=$("#"+sid+"_ex");ex.style.display="block";
     let html="";
-    if(pickIdx===undefined){html='<span class="bad">未作答</span> 正确答案：'+String.fromCharCode(65+q.ans)+'. '+q.opts[q.ans]+'<br>'+q.ex;}
+    if(isNaN(pickIdx)){html='<span class="bad">未作答</span> 正确答案：'+String.fromCharCode(65+q.ans)+'. '+q.opts[q.ans]+'<br>'+q.ex;}
     else if(pickIdx===q.ans){right++;html='<span class="ok">✓ 正确</span> '+q.ex;}
     else{$("#"+sid+"_"+pickIdx).classList.add("wrong");html='<span class="bad">✗ 错误</span> 正确答案：'+String.fromCharCode(65+q.ans)+'. '+q.opts[q.ans]+'<br>'+q.ex;}
     $("#"+sid+"_"+q.ans).classList.add("correct");
@@ -502,60 +512,133 @@ function gradeQuiz(bid){
   toast("本次答对 "+right+"/"+qs.length+"，已计入档案");
 }
 
-/* ===== 智能问答（优先大模型，离线降级本地知识库）===== */
-// file:// 直接打开时相对路径无法命中本地后端，统一指向本地服务；同源(server)时用空串
-const API_BASE = (location.protocol === "file:") ? "http://localhost:8000" : "";
-let ONLINE=false;
+/* ===== 智能问答（优先大模型，离线降级本地知识库） ===== */
+/* 后端地址解析优先级：
+   1) URL 参数 ?api=  —— 线上 GitHub Pages 可指向你的后端服务
+   2) localStorage  —— 在页面内手动设置过则沿用
+   3) 同源空串        —— 用 server.js 托管时自动命中
+   4) file:// 直开    —— 指向本地 8000
+*/
+function resolveApiBase(){
+  var q=new URLSearchParams(location.search).get("api");
+  if(q) return q.replace(/\/+$/,"");
+  var saved=localStorage.getItem("hxdao_api");
+  if(saved) return saved.replace(/\/+$/,"");
+  if(location.protocol==="file:") return "http://localhost:8000";
+  return "";
+}
+const API_BASE = resolveApiBase();
+let ONLINE=false, ENGINE_LABEL="", LAST_ERROR="";
+function setEngineTag(text,color){const t=$("#online-tag");if(!t)return;t.textContent=text;t.style.color=color;}
+function engineSettings(){
+  const cur=localStorage.getItem("hxdao_api")||API_BASE||"（同源）";
+  const v=prompt("输入后端服务地址（留空=使用当前地址）\n当前：" + cur + "\n\n说明：\n· 用 server.js 本机托管时留空即可\n· 部署到服务器后填 https://你的域名", cur);
+  if(v===null) return;
+  if(v.trim()===""){localStorage.removeItem("hxdao_api")}
+  else{localStorage.setItem("hxdao_api",v.trim().replace(/\/+$/,""))}
+  location.reload();
+}
 function checkOnline(){
+  if(typeof fetch!=="function"){setEngineTag("● 当前环境不支持网络请求 — 离线知识库模式","#e8a300");return}
   if(location.protocol === "file:"){
-    const t=$("#online-tag");
-    t.innerHTML="● 离线模式（本地文件）— 想用大模型请用 http://localhost:8000 打开";
-    t.style.color="#e8a300";
+    setEngineTag("● 离线模式（本地文件）— 想用大模型请用 http://localhost:8000 打开","#e8a300");
   }
-  fetch(API_BASE+"/api/config").then(function(r){return r.json()}).then(function(d){
-    ONLINE=d.configured;
-    const tag=$("#online-tag");
-    if(ONLINE){tag.textContent="● 智能引擎已连接";tag.style.color="#1aa15a"}
-    else{tag.textContent="● 离线模式（本地知识库）";tag.style.color="#e8a300"}
-  }).catch(function(){const tag=$("#online-tag");tag.textContent="● 离线模式（本地知识库）";tag.style.color="#e8a300"});
+  fetch(API_BASE+"/api/config",{cache:"no-store"}).then(function(r){
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    return r.json();
+  }).then(function(d){
+    ONLINE=!!d.configured;
+    ENGINE_LABEL=d.model||"";
+    if(ONLINE){setEngineTag("● 智能引擎已连接"+(ENGINE_LABEL?"（"+ENGINE_LABEL+"）":""),"#1aa15a")}
+    else{setEngineTag("● 后端已连接，但未配置模型密钥 — 走离线知识库","#e8a300")}
+  }).catch(function(e){
+    LAST_ERROR=String(e.message||e);
+    ONLINE=false;
+    setEngineTag("● 离线模式（本地知识库）— 点此设置后端","#e8a300");
+    const t=$("#online-tag");if(t){t.style.cursor="pointer";t.title="点击设置后端服务地址";t.onclick=engineSettings}
+  });
 }
 function sendAsk(){
   const inp=$("#ask-input");const txt=inp.value.trim();if(!txt)return;
   inp.value="";
   const chat=$("#chat");
-  chat.innerHTML+='<div class="bubble user">'+txt+'</div>';
+  chat.innerHTML+='<div class="bubble user">'+escapeHTML(txt)+'</div>';
   const typing=document.createElement("div");
-  typing.className="bubble bot";typing.textContent=(ONLINE?"智能引擎思考中…":"本地检索中…");
+  typing.className="bubble bot";
+  typing.id="ask-typing";
+  typing.innerHTML=ONLINE
+    ? '<span style="color:#8b93a7">智能引擎思考中…</span>'
+    : '<span style="color:#8b93a7">本地检索中…</span>';
   chat.appendChild(typing);chat.scrollTop=chat.scrollHeight;
-  if(ONLINE){
-    const history=[]; // 可保留历史，此处取最近数条
-    fetch(API_BASE+"/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({question:txt,history:history})})
-    .then(function(r){return r.json()})
-    .then(function(d){
-      if(d.error){ // 后端降级到本地
-        typing.outerHTML=localReply(txt);
-      }else{
-        typing.innerHTML=formatLLM(d.answer);
-      }
-      chat.scrollTop=chat.scrollHeight;
-    })
-    .catch(function(){typing.outerHTML=localReply(txt);chat.scrollTop=chat.scrollHeight});
-  }else{
-    typing.outerHTML=localReply(txt);chat.scrollTop=chat.scrollHeight;
+  const say=function(html){const el=$("#ask-typing");if(el)el.outerHTML=html;else chat.insertAdjacentHTML("beforeend",html);chat.scrollTop=chat.scrollHeight;};
+
+  if(!ONLINE){
+    say(localReply(txt));
+    return;
   }
+  const history=[];
+  fetch(API_BASE+"/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({question:txt,history:history})})
+  .then(function(r){return r.json().then(function(d){return{status:r.status,d:d}})})
+  .then(function(res){
+    if(res.status!==200||res.d.error){
+      say(localReply(txt));
+      if(res.d&&res.d.error) toast("智能引擎异常，已降级离线回答");
+      return;
+    }
+    let html='<div class="bubble bot">'+formatLLM(res.d.answer)+'</div>';
+    if(res.d.grounded&&res.d.grounded.length){
+      html+='<div class="grounded">依据知识库：'+res.d.grounded.join("、")+'</div>';
+    }
+    say(html);
+  })
+  .catch(function(){say(localReply(txt));toast("无法连接后端，已降级离线回答")});
+}
+function escapeHTML(s){
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 }
 function localReply(txt){
+  // 检索打分：关键词命中按字长累加；标题被整体提及额外加权
+  // （否则「会计是什么」会因 keys 含"会计"而压过「会计等式」）
   let best=null,bestScore=0;
-  KB.forEach(function(node){let sc=0;node.keys.forEach(function(k){if(txt.indexOf(k)>=0)sc+=k.length});if(sc>bestScore){bestScore=sc;best=node}});
+  KB.forEach(function(node){
+    let sc=0;
+    node.keys.forEach(function(k){if(k&&txt.indexOf(k)>=0)sc+=k.length});
+    if(node.k&&txt.indexOf(node.k)>=0)sc+=10;
+    if(sc>bestScore){bestScore=sc;best=node}
+  });
   if(best&&bestScore>0){
-    return '<div class="bubble bot"><div style="font-weight:600;margin-bottom:4px">'+best.k+'</div>'+best.a+'<div class="obe">对应 OBE：'+best.obe+'</div></div>';
+    return '<div class="bubble bot"><div style="font-weight:600;margin-bottom:4px">'+escapeHTML(best.k)+'</div>'+escapeHTML(best.a)+'<div class="obe">对应 OBE：'+escapeHTML(best.obe)+'</div></div>';
   }
-  return '<div class="bubble bot">未在我的知识库中直接匹配到「'+txt+'」。你可以试试问我：会计是什么、会计等式、会计信息质量、五维能力、AI 冲击、如何规划大一、考研留学、CIMA 方向班、挂科怎么办等。</div>';
+  return '<div class="bubble bot">未在我的知识库中直接匹配到「'+escapeHTML(txt)+'」。你可以试试问我：会计是什么、会计等式、会计信息质量、五维能力、AI 冲击、如何规划大一、考研留学、CIMA 方向班、挂科怎么办等。</div>';
 }
+/* 轻量 Markdown 渲染：先转义，再处理 **粗体** / 行内 `代码` / 列表 / 小标题
+   模型输出含 Markdown，必须渲染结构，否则一坨纯文本学生读不下去 */
 function formatLLM(text){
-  // 简单保留换行与基础格式
-  return text.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\n/g,"<br>");
+  let s=String(text||"");
+  s=s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  const lines=s.split(/\r?\n/);
+  let out=[],listType="";
+  function closeList(){if(listType){out.push(listType==="ol"?"</ol>":"</ul>");listType=""}}
+  for(let raw of lines){
+    const line=raw.trim();
+    if(!line){closeList();continue}
+    let m=line.match(/^#{1,4}\s+(.*)$/);
+    if(m){closeList();out.push('<div class="md-h">'+inline(m[1])+'</div>');continue}
+    m=line.match(/^[-*•]\s+(.*)$/);
+    if(m){if(listType!=="ul"){closeList();out.push('<ul class="md-ul">');listType="ul"}out.push('<li>'+inline(m[1])+'</li>');continue}
+    m=line.match(/^\d+[.、)]\s+(.*)$/);
+    if(m){if(listType!=="ol"){closeList();out.push('<ol class="md-ol">');listType="ol"}out.push('<li>'+inline(m[1])+'</li>');continue}
+    closeList();
+    out.push('<p class="md-p">'+inline(line)+'</p>');
+  }
+  closeList();
+  return out.join("");
+}
+function inline(t){
+  return String(t)
+    .replace(/\*\*(.+?)\*\*/g,'<b>$1</b>')
+    .replace(/`([^`]+?)`/g,'<code>$1</code>');
 }
 
 /* ===== 智能考核 ===== */
@@ -572,17 +655,23 @@ function startExam(){
 }
 function pickExam(sid,i,j){
   const q=QUIZ[i];
-  for(let k=0;k<q.opts.length;k++)$("#"+sid+"_"+k).classList.remove("sel");
-  $("#"+sid+"_"+j).classList.add("sel");$("#"+sid).dataset.pick=j;
+  for(let k=0;k<q.opts.length;k++){const el=$("#"+sid+"_"+k);if(el)el.classList.remove("sel")}
+  const chosen=$("#"+sid+"_"+j);if(chosen)chosen.classList.add("sel");
+  const box=$("#"+sid);if(box)box.dataset.pick=j;
 }
 function gradeExam(){
   let right=0;const dims={知识:0,能力:0,素养:0,规划:0},cnt={知识:0,能力:0,素养:0,规划:0};
   QUIZ.forEach(function(q,i){
-    const sid="e"+i;const pickIdx=parseInt($("#"+sid).dataset.pick);
-    const ex=$("#"+sid+"_ex");ex.style.display="block";
-    if(pickIdx===q.ans){right++;dims[q.obe]++;ex.innerHTML='<span class="ok">✓ 正确</span> '+q.ex;}
-    else{ex.innerHTML='<span class="bad">✗ 错误</span> 正确答案：'+String.fromCharCode(65+q.ans)+'. '+q.opts[q.ans]+'<br>'+q.ex;if(pickIdx!==undefined)$("#"+sid+"_"+pickIdx).classList.add("wrong");}
-    $("#"+sid+"_"+q.ans).classList.add("correct");
+    const sid="e"+i;const box=$("#"+sid);
+    if(!box)return;
+    const pickIdx=parseInt(box.dataset.pick);
+    const ex=$("#"+sid+"_ex");if(ex)ex.style.display="block";
+    if(!isNaN(pickIdx)&&pickIdx===q.ans){right++;dims[q.obe]++;if(ex)ex.innerHTML='<span class="ok">✓ 正确</span> '+q.ex;}
+    else{
+      if(ex)ex.innerHTML='<span class="bad">'+(isNaN(pickIdx)?'未作答':'✗ 错误')+'</span> 正确答案：'+String.fromCharCode(65+q.ans)+'. '+q.opts[q.ans]+'<br>'+q.ex;
+      if(!isNaN(pickIdx)&&$("#"+sid+"_"+pickIdx))$("#"+sid+"_"+pickIdx).classList.add("wrong");
+    }
+    const correctEl=$("#"+sid+"_"+q.ans);if(correctEl)correctEl.classList.add("correct");
     cnt[q.obe]++;
   });
   Object.keys(dims).forEach(function(k){dims[k]=Math.round(dims[k]/Math.max(cnt[k],1)*100)});
@@ -600,9 +689,19 @@ function gradeExam(){
   if(ONLINE){
     fetch(API_BASE+"/api/exam",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({dims:dims,weak:weak,mistakes:mistakes,plan:""})})
-    .then(function(r){return r.json()})
-    .then(function(d){ if(d.diagnosis){$("#exam-diagnosis").innerHTML='<b style="color:#2f6fed">🤖 智能诊断：</b><br>'+formatLLM(d.diagnosis)} else {$("#exam-diagnosis").innerHTML='你的「'+weak+'」维度相对薄弱，建议回到「习题练习」针对性巩固，或向智能问答提问相关知识点。'} })
-    .catch(function(){$("#exam-diagnosis").innerHTML='你的「'+weak+'」维度相对薄弱，建议回到「习题练习」针对性巩固，或向智能问答提问相关知识点。'});
+    .then(function(r){return r.json().then(function(d){return{status:r.status,d:d}})})
+    .then(function(res){
+      const fb=$("#exam-diagnosis");if(!fb)return;
+      if(res.status===200&&res.d.diagnosis){
+        fb.innerHTML='<b style="color:#2f6fed">🤖 智能诊断</b>'+formatLLM(res.d.diagnosis);
+      }else{
+        fb.innerHTML='你的「'+weak+'」维度相对薄弱，建议回到「习题练习」针对性巩固，或向智能问答提问相关知识点。';
+      }
+    })
+    .catch(function(){
+      const fb=$("#exam-diagnosis");if(!fb)return;
+      fb.innerHTML='你的「'+weak+'」维度相对薄弱，建议回到「习题练习」针对性巩固，或向智能问答提问相关知识点。';
+    });
   }else{
     $("#exam-diagnosis").innerHTML='你的「'+weak+'」维度相对薄弱，建议回到「习题练习」针对性巩固，或向智能问答提问相关知识点。（离线模式：配置大模型密钥后可获得个性化诊断）';
   }
