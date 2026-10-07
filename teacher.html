@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>会小导 · 教师看板</title>
+<style>
+:root{
+  --ink:#1f2328; --ink2:#57606a; --ink3:#8b949e;
+  --line:#e6e8eb; --bg:#f7f8fa; --card:#ffffff;
+  --brand:#2f6bd8; --brand-d:#2455ad;
+  --ok:#1aa15a; --warn:#e8a300; --bad:#d64545;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+}
+a{color:var(--brand)}
+
+/* ---------- 登录 ---------- */
+#login{
+  min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px;
+}
+.login-box{
+  width:100%; max-width:400px; background:var(--card); border:1px solid var(--line);
+  border-radius:14px; padding:34px 30px; box-shadow:0 2px 14px rgba(20,30,50,.06);
+}
+.login-box h1{ margin:0 0 6px; font-size:21px; }
+.login-box p.sub{ margin:0 0 22px; color:var(--ink3); font-size:13px; }
+.field{ margin-bottom:14px; }
+.field label{ display:block; font-size:13px; color:var(--ink2); margin-bottom:6px; }
+.field input{
+  width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px;
+  font-size:14px; background:#fff; color:var(--ink);
+}
+.field input:focus{ outline:none; border-color:var(--brand); }
+.btn{
+  width:100%; padding:11px; border:0; border-radius:8px; background:var(--brand);
+  color:#fff; font-size:15px; cursor:pointer;
+}
+.btn:hover{ background:var(--brand-d); }
+.btn:disabled{ background:#9db4e0; cursor:not-allowed; }
+.msg{ margin-top:14px; padding:10px 12px; border-radius:8px; font-size:13px; display:none; }
+.msg.err{ display:block; background:#fdecec; color:var(--bad); }
+.msg.ok{ display:block; background:#eaf7ef; color:var(--ok); }
+.hint{ margin-top:18px; font-size:12px; color:var(--ink3); line-height:1.7; }
+
+/* ---------- 主区 ---------- */
+#app{ display:none; }
+.topbar{
+  background:var(--card); border-bottom:1px solid var(--line); padding:14px 24px;
+  display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+  position:sticky; top:0; z-index:10;
+}
+.topbar h1{ margin:0; font-size:17px; }
+.topbar .sp{ flex:1; }
+.tag{
+  font-size:12px; padding:4px 10px; border-radius:20px;
+  background:#eef2f8; color:var(--ink2);
+}
+.tag b{ color:var(--brand); }
+.tbtn{
+  padding:7px 14px; border:1px solid var(--line); border-radius:7px;
+  background:#fff; color:var(--ink2); font-size:13px; cursor:pointer;
+}
+.tbtn:hover{ border-color:var(--brand); color:var(--brand); }
+.tbtn.main{ background:var(--brand); color:#fff; border-color:var(--brand); }
+.tbtn.main:hover{ background:var(--brand-d); }
+
+.wrap{ max-width:1240px; margin:0 auto; padding:22px 24px 60px; }
+
+/* ---------- 概览卡 ---------- */
+.cards{ display:grid; grid-template-columns:repeat(auto-fit,minmax(158px,1fr)); gap:14px; margin-bottom:22px; }
+.card{
+  background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px 18px;
+}
+.card .k{ font-size:12px; color:var(--ink3); margin-bottom:6px; }
+.card .v{ font-size:27px; font-weight:600; line-height:1.15; }
+.card .u{ font-size:13px; color:var(--ink3); font-weight:400; margin-left:3px; }
+
+.sec-title{
+  font-size:15px; font-weight:600; margin:26px 0 12px;
+  display:flex; align-items:center; gap:8px;
+}
+.sec-title small{ font-weight:400; font-size:12px; color:var(--ink3); }
+
+/* ---------- 分数段 ---------- */
+.bands{ display:flex; gap:10px; align-items:flex-end; height:170px; padding:0 4px; }
+.band{ flex:1; display:flex; flex-direction:column; align-items:center; gap:7px; }
+.band .n{ font-size:14px; font-weight:600; }
+.band .bar{ width:100%; background:var(--brand); border-radius:5px 5px 0 0; min-height:3px; }
+.band .lb{ font-size:12px; color:var(--ink2); text-align:center; }
+
+/* ---------- 四维 ---------- */
+.dims{ display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:14px; }
+.dim{ background:var(--card); border:1px solid var(--line); border-radius:11px; padding:15px 17px; }
+.dim .t{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:10px; }
+.dim .t span{ font-size:13px; color:var(--ink2); }
+.dim .t b{ font-size:20px; }
+.track{ height:8px; background:#eef0f3; border-radius:5px; overflow:hidden; }
+.track i{ display:block; height:100%; background:var(--brand); border-radius:5px; }
+.dim .tip{ font-size:11px; color:var(--ink3); margin-top:8px; }
+
+/* ---------- 名单 ---------- */
+.table-wrap{ background:var(--card); border:1px solid var(--line); border-radius:11px; overflow:auto; }
+table{ width:100%; border-collapse:collapse; font-size:13px; }
+th,td{ padding:10px 12px; text-align:left; border-bottom:1px solid var(--line); white-space:nowrap; }
+th{ background:#fafbfc; color:var(--ink2); font-weight:600; font-size:12px; position:sticky; top:0; }
+tr:last-child td{ border-bottom:0; }
+tr:hover td{ background:#f9fafb; }
+td.rate{ font-weight:600; }
+.pill{ display:inline-block; padding:2px 9px; border-radius:20px; font-size:12px; }
+.pill.g{ background:#eaf7ef; color:#14804a; }
+.pill.m{ background:#fdf6e3; color:#9a7b00; }
+.pill.b{ background:#fdecec; color:#b83b3b; }
+
+.empty{ padding:44px 20px; text-align:center; color:var(--ink3); }
+.empty b{ display:block; color:var(--ink2); font-size:15px; margin-bottom:7px; }
+
+@media(max-width:640px){
+  .wrap{ padding:16px 14px 40px; }
+  .bands{ height:140px; }
+}
+</style>
+</head>
+<body>
+
+<!-- 登录 -->
+<div id="login">
+  <div class="login-box">
+    <h1>会小导 · 教师看板</h1>
+    <p class="sub">学情分析与成绩导出</p>
+    <div class="field">
+      <label for="key">教师口令</label>
+      <input type="password" id="key" placeholder="请输入教师口令" autocomplete="current-password">
+    </div>
+    <div class="field">
+      <label for="api">后端地址</label>
+      <input type="text" id="api" placeholder="留空=使用默认地址">
+    </div>
+    <button class="btn" id="login-btn">进入看板</button>
+    <div class="msg" id="login-msg"></div>
+    <div class="hint">
+      看板只读取<b>成绩汇总数据</b>（学号、答对题数、四维得分、提交日期），<br>
+      不含个人作答明细、AI 提问内容与浏览记录。<br>
+      <a href="index.html">← 返回学生端</a>
+    </div>
+  </div>
+</div>
+
+<!-- 看板 -->
+<div id="app">
+  <div class="topbar">
+    <h1>会小导 · 教师看板</h1>
+    <span class="tag">后端 <b id="tag-api">—</b></span>
+    <span class="tag" id="tag-db">—</span>
+    <div class="sp"></div>
+    <button class="tbtn" id="refresh-btn">刷新</button>
+    <button class="tbtn main" id="csv-btn">导出 CSV</button>
+    <button class="tbtn" id="logout-btn">退出</button>
+  </div>
+
+  <div class="wrap">
+    <div class="cards" id="cards"></div>
+
+    <div class="sec-title">分数段分布 <small>按每位学生最新一次考核的正确率</small></div>
+    <div class="card" style="padding:20px">
+      <div class="bands" id="bands"></div>
+    </div>
+
+    <div class="sec-title">四维整体均分 <small>知识 / 能力 / 素养 / 规划，满分 100</small></div>
+    <div class="dims" id="dims"></div>
+
+    <div class="sec-title">学生名单 <small id="stu-count"></small></div>
+    <div class="table-wrap">
+      <table id="stu-table">
+        <thead><tr>
+          <th>学号</th><th>姓名</th><th>答对</th><th>正确率</th>
+          <th>知识</th><th>能力</th><th>素养</th><th>规划</th><th>错题</th><th>日期</th>
+        </tr></thead>
+        <tbody id="stu-body"></tbody>
+      </table>
+      <div class="empty" id="stu-empty" style="display:none">
+        <b>还没有学生提交考核</b>
+        学生完成一次考核后，成绩会自动出现在这里
+      </div>
+    </div>
+
+    <div class="sec-title" id="trend-title">历次考核趋势</div>
+    <div class="table-wrap">
+      <table id="trend-table">
+        <thead><tr><th>日期</th><th>交卷人数</th><th>平均正确率</th><th>知识</th><th>能力</th><th>素养</th><th>规划</th></tr></thead>
+        <tbody id="trend-body"></tbody>
+      </table>
+      <div class="empty" id="trend-empty" style="display:none"><b>暂无趋势数据</b></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* 后端地址解析：与学生端一致
+   1) ?api= 参数  2) localStorage  3) 默认线上地址 */
+var DEFAULT_API = "https://hui-xiao-dao-engine.tigeryoung555.workers.dev";
+function resolveApiBase(){
+  var q = new URLSearchParams(location.search).get("api");
+  if(q) return q.replace(/\/+$/,"");
+  var saved = localStorage.getItem("hxdao_api");
+  if(saved) return saved.replace(/\/+$/,"");
+  return DEFAULT_API;
+}
+var API = resolveApiBase();
+var TKEY = sessionStorage.getItem("hxdao_tkey") || "";
+
+function $(id){ return document.getElementById(id); }
+function esc(s){
+  return String(s==null?"":s).replace(/[&<>"']/g, function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
+  });
+}
+function showMsg(text, kind){
+  var m = $("login-msg");
+  m.textContent = text;
+  m.className = "msg " + kind;
+}
+
+/* ---------- 登录 ---------- */
+$("api").value = localStorage.getItem("hxdao_api") || "";
+if(TKEY) $("key").value = TKEY;
+
+$("login-btn").addEventListener("click", login);
+$("key").addEventListener("keydown", function(e){ if(e.key === "Enter") login(); });
+$("api").addEventListener("keydown", function(e){ if(e.key === "Enter") login(); });
+
+function login(){
+  var btn = $("login-btn");
+  var key = $("key").value.trim();
+  if(!key){ showMsg("请输入教师口令","err"); return; }
+
+  var custom = $("api").value.trim();
+  API = (custom || DEFAULT_API).replace(/\/+$/,"");
+  if(custom) localStorage.setItem("hxdao_api", API); else localStorage.removeItem("hxdao_api");
+
+  btn.disabled = true;
+  btn.textContent = "验证中…";
+  fetch(API + "/api/teacher", {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ key: key })
+  }).then(function(r){
+    return r.json().then(function(j){ return { code:r.status, body:j }; });
+  }).then(function(res){
+    if(res.code === 200){
+      TKEY = key;
+      sessionStorage.setItem("hxdao_tkey", TKEY);
+      enterApp();
+    } else if(res.code === 503){
+      showMsg("服务端尚未设置教师口令，请在 Cloudflare 上执行 wrangler secret put TEACHER_KEY","err");
+    } else {
+      showMsg("口令不正确","err");
+      $("key").value = "";
+      $("key").focus();
+    }
+  }).catch(function(e){
+    showMsg("连不上后端：" + (e.message || e), "err");
+  }).finally(function(){
+    btn.disabled = false;
+    btn.textContent = "进入看板";
+  });
+}
+
+function enterApp(){
+  $("login").style.display = "none";
+  $("app").style.display = "block";
+  $("tag-api").textContent = API.replace(/^https?:\/\//,"");
+  loadStats();
+}
+
+/* ---------- 拉取统计 ---------- */
+function loadStats(){
+  return fetch(API + "/api/teacher/stats", {
+    cache:"no-store",
+    headers:{ "X-Teacher-Key": TKEY }
+  }).then(function(r){
+    if(r.status === 401){
+      sessionStorage.removeItem("hxdao_tkey");
+      TKEY = "";
+      showLoginAgain("登录状态已失效，请重新输入口令");
+      throw new Error("unauthorized");
+    }
+    if(r.status === 503) throw new Error("服务端未绑定数据库（D1），请检查 wrangler.toml");
+    if(!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  }).then(render).catch(function(e){
+    if(e.message === "unauthorized") return;
+    var t = $("tag-db");
+    t.textContent = "数据加载失败：" + e.message;
+    t.style.color = "#d64545";
+    $("stu-empty").style.display = "block";
+    $("stu-empty").innerHTML = "<b>数据加载失败</b>" + esc(e.message);
+    renderEmptyCards();
+  });
+}
+
+function showLoginAgain(msg){
+  $("app").style.display = "none";
+  $("login").style.display = "flex";
+  showMsg(msg, "err");
+}
+
+function renderEmptyCards(){
+  $("cards").innerHTML =
+    '<div class="card"><div class="k">学生人数</div><div class="v">—</div></div>';
+  $("bands").innerHTML = '<div style="color:#8b949e;font-size:13px;width:100%;text-align:center">暂无数据</div>';
+  $("dims").innerHTML = "";
+}
+
+function render(d){
+  var tag = $("tag-db");
+  tag.textContent = "数据库已连接 · 累计 " + d.totalRecords + " 条记录";
+  tag.style.color = "#1aa15a";
+
+  /* 概览卡 */
+  var cards = $("cards");
+  var avg = d.byDate && d.byDate.length ? d.byDate[d.byDate.length - 1].avg_rate : null;
+  var latestN = d.byDate && d.byDate.length ? d.byDate[d.byDate.length - 1].n : 0;
+  cards.innerHTML =
+    card("学生人数", d.totalStudents, "人") +
+    card("累计记录", d.totalRecords, "条") +
+    card("最近一次交卷", latestN, "人") +
+    card("最近平均正确率", avg === null ? "—" : avg, avg === null ? "" : "%");
+
+  /* 分数段 */
+  var maxN = 0;
+  d.bands.forEach(function(b){ if(b.n > maxN) maxN = b.n; });
+  $("bands").innerHTML = d.bands.map(function(b){
+    var h = maxN ? Math.max(3, Math.round(b.n / maxN * 120)) : 3;
+    var color = b.min >= 80 ? "#1aa15a" : b.min >= 60 ? "#e8a300" : "#d64545";
+    return '<div class="band">' +
+      '<div class="n">' + b.n + '</div>' +
+      '<div class="bar" style="height:' + h + 'px;background:' + color + '"></div>' +
+      '<div class="lb">' + esc(b.label) + '</div>' +
+      '</div>';
+  }).join("");
+
+  /* 四维 */
+  var tips = {
+    "知识":"概念与原理的掌握",
+    "能力":"分析与应用题的处理",
+    "素养":"职业规范与伦理意识",
+    "规划":"学习计划与自我管理"
+  };
+  var dimKeys = ["知识","能力","素养","规划"];
+  var dimKeys2 = { "知识":"k", "能力":"a", "素养":"l", "规划":"p" };
+  $("dims").innerHTML = dimKeys.map(function(k){
+    var v = d.dimAvg[k] || 0;
+    var color = v >= 80 ? "#1aa15a" : v >= 60 ? "#e8a300" : "#d64545";
+    return '<div class="dim"><div class="t"><span>' + k + '</span><b style="color:' + color + '">' + v + '</b></div>' +
+      '<div class="track"><i style="width:' + Math.max(2, v) + '%;background:' + color + '"></i></div>' +
+      '<div class="tip">' + esc(tips[k]) + '</div></div>';
+  }).join("");
+
+  /* 名单 */
+  var body = $("stu-body");
+  body.innerHTML = d.students.map(function(s){
+    var rate = Number(s.rate) || 0;
+    var cls = rate >= 80 ? "g" : rate >= 60 ? "m" : "b";
+    return "<tr>" +
+      "<td>" + esc(s.sid) + "</td>" +
+      "<td>" + esc(s.name || "—") + "</td>" +
+      "<td>" + esc(s.score) + "/" + esc(s.total) + "</td>" +
+      '<td class="rate"><span class="pill ' + cls + '">' + rate + '%</span></td>' +
+      "<td>" + esc(s.k) + "</td><td>" + esc(s.a) + "</td>" +
+      "<td>" + esc(s.l) + "</td><td>" + esc(s.p) + "</td>" +
+      "<td>" + esc(s.wrong) + "</td>" +
+      "<td>" + esc(s.date) + "</td>" +
+      "</tr>";
+  }).join("");
+  $("stu-empty").style.display = d.students.length ? "none" : "block";
+  $("stu-count").textContent = d.students.length ? "共 " + d.students.length + " 人，按正确率从低到高排列" : "";
+
+  /* 趋势 */
+  $("trend-body").innerHTML = (d.byDate || []).map(function(r){
+    return "<tr><td>" + esc(r.date) + "</td><td>" + esc(r.n) + "</td><td>" +
+      esc(r.avg_rate) + "%</td><td>" + esc(r.k) + "</td><td>" + esc(r.a) +
+      "</td><td>" + esc(r.l) + "</td><td>" + esc(r.p) + "</td></tr>";
+  }).join("");
+  $("trend-empty").style.display = (d.byDate && d.byDate.length) ? "none" : "block";
+  $("trend-title").style.display = (d.byDate && d.byDate.length) ? "flex" : "none";
+}
+
+function card(k, v, u){
+  return '<div class="card"><div class="k">' + esc(k) + '</div><div class="v">' +
+    esc(v) + (u ? '<span class="u">' + esc(u) + '</span>' : '') + '</div></div>';
+}
+
+/* ---------- 导出 CSV ---------- */
+$("csv-btn").addEventListener("click", function(){
+  // fetch 拿 blob 后用 a[download] 触发，浏览器才会当附件存下来
+  fetch(API + "/api/teacher/export", { headers:{ "X-Teacher-Key": TKEY } })
+    .then(function(r){
+      if(!r.ok) throw new Error("HTTP " + r.status);
+      return r.blob();
+    })
+    .then(function(b){
+      var url = URL.createObjectURL(b);
+      var a = document.createElement("a");
+      var d = new Date();
+      var stamp = d.getFullYear() + String(d.getMonth()+1).padStart(2,"0") + String(d.getDate()).padStart(2,"0");
+      a.href = url;
+      a.download = "会小导学情报告_" + stamp + ".csv";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+    })
+    .catch(function(e){ alert("导出失败：" + (e.message || e)); });
+});
+
+$("refresh-btn").addEventListener("click", loadStats);
+$("logout-btn").addEventListener("click", function(){
+  sessionStorage.removeItem("hxdao_tkey");
+  TKEY = "";
+  $("key").value = "";
+  $("app").style.display = "none";
+  $("login").style.display = "flex";
+  showMsg("", "err");
+  $("login-msg").className = "msg";
+});
+
+/* 已保存口令则直接进看板 */
+if(TKEY){
+  $("key").value = TKEY;
+  fetch(API + "/api/teacher", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ key: TKEY })
+  }).then(function(r){
+    if(r.ok){ enterApp(); }
+    else { sessionStorage.removeItem("hxdao_tkey"); TKEY = ""; }
+  }).catch(function(){});
+}
+</script>
+</body>
+</html>
