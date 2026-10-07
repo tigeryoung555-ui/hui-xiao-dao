@@ -534,6 +534,8 @@ function gradeQuiz(bid){
     ex.innerHTML=html;
   });
   const s=JSON.parse(localStorage.getItem(S_KEY));const a=rec();
+  // 与考核同理：新学生首次练习时档案对象还不存在，须先兜底建档
+  if(!a[s.id])a[s.id]={checkins:[],practice:[],exam:null};
   if(!a[s.id].practice)a[s.id].practice=[];
   qs.forEach(function(q,i){const pickIdx=parseInt($("#q"+i).dataset.pick);
     a[s.id].practice.push({obe:q.obe,right:pickIdx===q.ans})});
@@ -543,27 +545,36 @@ function gradeQuiz(bid){
 
 /* ===== 智能问答（优先大模型，离线降级本地知识库） ===== */
 /* 后端地址解析优先级：
-   1) URL 参数 ?api=  —— 线上 GitHub Pages 可指向你的后端服务
-   2) localStorage  —— 在页面内手动设置过则沿用
-   3) 同源空串        —— 用 server.js 托管时自动命中
+   1) URL 参数 ?api=  —— 可临时指向别的后端
+   2) localStorage  —— 用户在页面内手动设置过则沿用
+   3) 默认线上地址    —— GitHub Pages 上首次访问也自动连上（否则同源是 Pages，报错）
    4) file:// 直开    —— 指向本地 8000
 */
+var DEFAULT_API="https://hui-xiao-dao-engine.tigeryoung555.workers.dev";
 function resolveApiBase(){
   var q=new URLSearchParams(location.search).get("api");
   if(q) return q.replace(/\/+$/,"");
   var saved=localStorage.getItem("hxdao_api");
   if(saved) return saved.replace(/\/+$/,"");
   if(location.protocol==="file:") return "http://localhost:8000";
-  return "";
+  return DEFAULT_API;
 }
 const API_BASE = resolveApiBase();
 let ONLINE=false, ENGINE_LABEL="", LAST_ERROR="";
 function setEngineTag(text,color){const t=$("#online-tag");if(!t)return;t.textContent=text;t.style.color=color;}
 function engineSettings(){
-  const cur=localStorage.getItem("hxdao_api")||API_BASE||"（同源）";
-  const v=prompt("输入后端服务地址（留空=使用当前地址）\n当前：" + cur + "\n\n说明：\n· 用 server.js 本机托管时留空即可\n· 部署到服务器后填 https://你的域名", cur);
+  const cur=localStorage.getItem("hxdao_api")||API_BASE||"（未设置）";
+  const v=prompt(
+    "输入后端服务地址\n" +
+    "当前：" + cur + "\n\n" +
+    "说明：\n" +
+    "· 直接留空 = 恢复默认线上地址\n" +
+    "· 用 server.js 本机托管时填 http://localhost:8000\n" +
+    "· 换了自己的部署时填 https://你的域名",
+    cur
+  );
   if(v===null) return;
-  if(v.trim()===""){localStorage.removeItem("hxdao_api")}
+  if(v.trim()===""){localStorage.removeItem("hxdao_api")}   // 清空=回到默认地址，不是空地址
   else{localStorage.setItem("hxdao_api",v.trim().replace(/\/+$/,""))}
   location.reload();
 }
@@ -707,6 +718,10 @@ function gradeExam(){
   const s=JSON.parse(localStorage.getItem(S_KEY));const a=rec();
   const mistakes=[];
   QUIZ.forEach(function(q,i){ if(parseInt($("#e"+i).dataset.pick)!==q.ans){ mistakes.push(q.q+"（正确答案："+q.opts[q.ans]+"）") }});
+  // 关键：新学生首次考核时 rec() 里还没有他的档案对象，
+  // 直接写 a[s.id].exam 会抛 "Cannot set properties of undefined"，
+  // 导致成绩存不上、上报不发、结果页也渲染不出来。必须先兜底建档。
+  if(!a[s.id])a[s.id]={checkins:[],practice:[],exam:null};
   a[s.id].exam={score:right,total:QUIZ.length,date:new Date().toISOString().slice(0,10),dims:dims};
   saveRec(a);renderHome();
   reportScore(right,QUIZ.length,dims,QUIZ.length-right);   // 上报学情汇总（失败不阻塞）
