@@ -617,10 +617,19 @@ function sendAsk(){
     return;
   }
   const history=[];
+  // 取学号用于「每学号每日配额」统计；未登录用浏览器匿名 id（仍是每浏览器 10 次/日）
+  let sid;
+  try{const ss=JSON.parse(localStorage.getItem(S_KEY));sid=ss&&ss.id?ss.id:null}catch(e){sid=null}
+  if(!sid){sid=localStorage.getItem("hxdao_anon")||"";if(!sid){sid="anon_"+Math.random().toString(36).slice(2,10);localStorage.setItem("hxdao_anon",sid)}}
   fetch(API_BASE+"/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({question:txt,history:history})})
+    body:JSON.stringify({question:txt,history:history,sid:sid})})
   .then(function(r){return r.json().then(function(d){return{status:r.status,d:d}})})
   .then(function(res){
+    if(res.status===429){
+      say('<div class="bubble bot" style="color:#e8a300">⚠️ 今日 AI 问答已达 10 次上限（每学号每日 10 次，UTC 次日 0 点重置）。你仍可问我内置知识库的问题，或明天再来～</div>');
+      toast("今日 AI 问答已达上限");
+      return;
+    }
     if(res.status!==200||res.d.error){
       say(localReply(txt));
       if(res.d&&res.d.error) toast("智能引擎异常，已降级离线回答");
@@ -629,6 +638,9 @@ function sendAsk(){
     let html='<div class="bubble bot">'+formatLLM(res.d.answer)+'</div>';
     if(res.d.grounded&&res.d.grounded.length){
       html+='<div class="grounded">依据知识库：'+res.d.grounded.join("、")+'</div>';
+    }
+    if(res.d.quota&&typeof res.d.quota.remaining==="number"){
+      html+='<div class="grounded" style="opacity:.7">今日 AI 问答剩余 '+res.d.quota.remaining+' 次</div>';
     }
     say(html);
   })
