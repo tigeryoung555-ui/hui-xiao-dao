@@ -351,14 +351,52 @@ const BANKS = [
 ];
 
 /* ============ 存储 ============ */
-const U_KEY="hxdao_users", S_KEY="hxdao_session", R_KEY="hxdao_records";
+const U_KEY="hxdao_users", S_KEY="hxdao_session", R_KEY="hxdao_records_v2";
 const $ = function(s){return document.querySelector(s)};
 function users(){return JSON.parse(localStorage.getItem(U_KEY)||"[]")}
 function saveUsers(u){localStorage.setItem(U_KEY,JSON.stringify(u))}
-function rec(){try{return JSON.parse(localStorage.getItem(R_KEY)||"{}")}catch(e){return {}}}
-function saveRec(a){localStorage.setItem(R_KEY,JSON.stringify(a))}
+function localRec(){try{return JSON.parse(localStorage.getItem(R_KEY)||"{}")}catch(e){return {}}}
+function saveLocalRec(a){localStorage.setItem(R_KEY,JSON.stringify(a))}
 function hash(s){let h=0;for(let i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))>>>0}return h.toString(16)}
 function toast(msg){const t=$("#toast");t.textContent=msg;t.classList.add("show");setTimeout(function(){t.classList.remove("show")},2200)}
+
+/* 学习记录读写：本地缓存优先（即时渲染），并异步同步到云端实现跨设备同步 */
+function rec(){ return localRec(); }                               // 保持原接口形状 {sid:{checkins,practice,exam}}
+function saveRec(a){
+  const sid=currentSid(), pwd=currentPwd();
+  saveLocalRec(a);                                                 // 写本地（离线可读）
+  if(sid&&pwd) syncRecToCloud(sid,pwd,a[sid]);                     // 异步同步云端（失败静默降级）
+}
+function currentSid(){ try{const s=JSON.parse(localStorage.getItem(S_KEY));return s&&s.id?s.id:null}catch(e){return null} }
+function currentPwd(){ try{const s=JSON.parse(localStorage.getItem(S_KEY));return s&&s.pwd?s.pwd:null}catch(e){return null} }
+
+/* 把某学号的学习记录推到云端（fire-and-forget，失败不影响本地使用） */
+function syncRecToCloud(sid,pwd,data){
+  try{
+    if(!sid||!pwd) return;
+    if(typeof fetch!=="function") return;
+    if(location.protocol==="file:") return;
+    fetch(API_BASE+"/api/records",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({sid:sid,pwd:pwd,data:data||{checkins:[],practice:[],exam:null}})}).catch(function(){});
+  }catch(e){}
+}
+/* 从云端拉取该学号记录覆盖本地（登录后/进入时调用，实现跨设备同步） */
+function pullRecFromCloud(sid,pwd){
+  return new Promise(function(resolve){
+    try{
+      if(!sid||!pwd){resolve(false);return;}
+      if(typeof fetch!=="function"||location.protocol==="file:"){resolve(false);return;}
+      fetch(API_BASE+"/api/records?sid="+encodeURIComponent(sid)+"&pwd="+encodeURIComponent(pwd),{cache:"no-store"})
+        .then(function(r){return r.json().then(function(d){return{status:r.status,d:d}})})
+        .then(function(res){
+          if(res.status===200&&res.d&&res.d.data){
+            const a=localRec();a[sid]=res.d.data;saveLocalRec(a);resolve(true);
+          }else{resolve(false);}
+        })
+        .catch(function(){resolve(false);});
+    }catch(e){resolve(false);}
+  });
+}
 
 /* ===== 学情成绩上报（只传汇总行，失败不阻塞答题） =====
    上报内容：学号、姓名、答对题数、总题数、四维得分、错题数、日期
@@ -388,22 +426,61 @@ function reportScore(score,total,dims,wrong){
 /* ===== 认证 ===== */
 function showReg(){$("#login-form").classList.add("hidden");$("#reg-form").classList.remove("hidden")}
 function showLogin(){$("#reg-form").classList.add("hidden");$("#login-form").classList.remove("hidden")}
-function doReg(){
+async function doReg(){
   const id=$("#reg-id").value.trim(), name=$("#reg-name").value.trim(),
         p=$("#reg-pwd").value, p2=$("#reg-pwd2").value;
   if(!id||!name||!p){return toast("请填写完整信息")}
   if(p!==p2){return toast("两次密码不一致")}
+  const ph=hash(p);
+  let done=false;
+  try{
+    if(typeof fetch==="function" && location.protocol!=="file:"){
+      const r=await fetch(API_BASE+"/api/register",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sid:id,name:name,pwd:ph})});
+      if(r.status===200){done=true;}
+      else if(r.status===409){return toast("该学号已注册，请直接登录");}
+      else{const d=await r.json().catch(function(){return{}});return toast(d.error||"注册失败，请稍后重试");}
+    }
+  }catch(e){}
+  if(!done){
+    let u=users();
+    if(u.find(function(x){return x.id===id})){return toast("该学号已注册，请直接登录")}
+    u.push({id:id,name:name,pwd:ph});saveUsers(u);
+  }
+  // 无论云端是否成功，都把账号写进本地（方便离线登录与平滑迁移）
   let u=users();
-  if(u.find(function(x){return x.id===id})){return toast("该学号已注册，请直接登录")}
-  u.push({id:id,name:name,pwd:hash(p)});saveUsers(u);
+  if(!u.find(function(x){return x.id===id})){u.push({id:id,name:name,pwd:ph});saveUsers(u);}
   toast("注册成功，请登录");showLogin();
 }
-function doLogin(){
+async function doLogin(){
   const id=$("#login-user").value.trim(), p=$("#login-pwd").value;
-  const u=users().find(function(x){return x.id===id&&x.pwd===hash(p)});
-  if(!u){return toast("账号或密码错误")}
-  localStorage.setItem(S_KEY,JSON.stringify({id:id,name:u.name}));
-  enter();
+  if(!id||!p) return toast("请输入学号和密码");
+  const ph=hash(p);
+  let ok=false, name=null;
+  try{
+    if(typeof fetch==="function" && location.protocol!=="file:"){
+      const r=await fetch(API_BASE+"/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sid:id,pwd:ph})});
+      const d=await r.json().catch(function(){return{}});
+      if(r.status===200){ok=true;name=d.name;}
+      else if(r.status===401){
+        // 云端无账号？若本地有旧账号（迁移场景），自动搬到云端
+        const lu=users().find(function(x){return x.id===id&&x.pwd===ph});
+        if(lu){
+          const rr=await fetch(API_BASE+"/api/register",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sid:id,name:lu.name,pwd:ph})});
+          if(rr.status===200||rr.status===409){ok=true;name=lu.name;}
+        }
+      }
+    }
+  }catch(e){}
+  if(!ok){
+    // 离线或云端失败且无本地账号 → 退回本地校验
+    const u=users().find(function(x){return x.id===id&&x.pwd===ph});
+    if(u){ok=true;name=u.name;}
+  }
+  if(!ok) return toast("账号或密码错误");
+  localStorage.setItem(S_KEY,JSON.stringify({id:id,name:name,pwd:ph}));
+  enter();   // 先用本地缓存秒开 App（离线/云慢也立即可用）
+  // 后台拉云端记录覆盖本地并刷新 → 跨设备同步（失败静默降级，不影响使用）
+  await pullRecFromCloud(id,ph).then(function(ok2){ if(ok2){ renderHome();renderCheckinList(); } });
 }
 function logout(){localStorage.removeItem(S_KEY);location.reload()}
 function enter(){
@@ -413,6 +490,10 @@ function enter(){
   $("#welcome").textContent="👋 "+s.name+"，欢迎回来！继续你的专业认知之旅。";
   renderHome();renderCheckinList();buildBankBtns();
   checkOnline();
+  // 进入时再同步一次云端记录覆盖本地（处理「已登录用户换设备」场景）
+  if(s.id&&s.pwd){
+    pullRecFromCloud(s.id,s.pwd).then(function(ok){ if(ok){ renderHome();renderCheckinList(); } });
+  }
 }
 
 /* ===== 导航 ===== */
@@ -765,6 +846,16 @@ function gradeExam(){
   }
   toast("考核完成，已生成达成度报告");
 }
+
+/* 兼容性迁移：旧版本学习记录存在 hxdao_records，新版本改用 hxdao_records_v2。
+   若新键缺失而旧键存在，则复制过来，避免已部署用户本地数据丢失。 */
+(function migrateRecords(){
+  try{
+    if(!localStorage.getItem(R_KEY) && localStorage.getItem("hxdao_records")){
+      localStorage.setItem(R_KEY, localStorage.getItem("hxdao_records"));
+    }
+  }catch(e){}
+})();
 
 /* 初始：若已登录直接进入 */
 if(localStorage.getItem(S_KEY))enter();
