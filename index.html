@@ -146,6 +146,8 @@
     <button class="nav-item" onclick="nav('practice')">📝 习题练习</button>
     <button class="nav-item" onclick="nav('ask')">💬 智能问答</button>
     <button class="nav-item" onclick="nav('exam')">🎯 智能考核</button>
+    <button class="nav-item" onclick="nav('survey')">📋 使用问卷</button>
+
     <div class="user-box">
       <div class="uname" id="side-name">—</div>
       <div id="side-id" style="color:var(--sub)">—</div>
@@ -278,6 +280,11 @@
     </section>
   </div>
 </div>
+
+    <!-- 使用问卷（iframe 嵌入 survey.html，同源共享登录态） -->
+    <section id="page-survey" class="hidden">
+      <iframe src="survey.html" style="width:100%;height:82vh;border:none;border-radius:14px;background:#fff"></iframe>
+    </section>
 
 <div id="toast"></div>
 
@@ -500,7 +507,7 @@ function enter(){
 function nav(p){
   document.querySelectorAll("section[id^='page-']").forEach(function(s){s.classList.add("hidden")});
   $("#page-"+p).classList.remove("hidden");
-  const map={home:0,checkin:1,practice:2,ask:3,exam:4};
+  const map={home:0,checkin:1,practice:2,ask:3,exam:4,survey:5};
   document.querySelectorAll(".nav-item").forEach(function(b){b.classList.remove("active")});
   document.querySelectorAll(".nav-item")[map[p]].classList.add("active");
 }
