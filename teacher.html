@@ -141,6 +141,7 @@ td.rate{ font-weight:600; }
     </div>
     <button class="btn" id="login-btn">进入看板</button>
     <div class="msg" id="login-msg"></div>
+    <div class="msg" id="api-status" style="color:#57606a">正在检测后端状态…</div>
     <div class="hint">
       看板只读取<b>成绩汇总数据</b>（学号、答对题数、四维得分、提交日期），<br>
       不含个人作答明细、AI 提问内容与浏览记录。<br>
@@ -158,7 +159,6 @@ td.rate{ font-weight:600; }
     <div class="sp"></div>
     <button class="tbtn" id="refresh-btn">刷新</button>
     <button class="tbtn main" id="csv-btn">导出 CSV</button>
-    <button class="tbtn main" id="csv-survey-btn">导出问卷</button>
     <button class="tbtn" id="logout-btn">退出</button>
   </div>
 
@@ -201,4 +201,288 @@ td.rate{ font-weight:600; }
 
 <script>
 /* 后端地址解析：与学生端一致
-   1) ?api= 参数  2) localStor
+   1) ?api= 参数  2) localStorage  3) 默认线上地址 */
+var DEFAULT_API = "https://hui-xiao-dao-engine.tigeryoung555.workers.dev";
+function resolveApiBase(){
+  var q = new URLSearchParams(location.search).get("api");
+  if(q) return q.replace(/\/+$/,"");
+  var saved = localStorage.getItem("hxdao_api");
+  if(saved) return saved.replace(/\/+$/,"");
+  return DEFAULT_API;
+}
+var API = resolveApiBase();
+var TKEY = sessionStorage.getItem("hxdao_tkey") || "";
+
+function $(id){ return document.getElementById(id); }
+function esc(s){
+  return String(s==null?"":s).replace(/[&<>"']/g, function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
+  });
+}
+function showMsg(text, kind){
+  var m = $("login-msg");
+  m.textContent = text;
+  m.className = "msg " + kind;
+}
+
+/* ---------- 登录 ---------- */
+$("api").value = localStorage.getItem("hxdao_api") || "";
+if(TKEY) $("key").value = TKEY;
+
+$("login-btn").addEventListener("click", login);
+$("key").addEventListener("keydown", function(e){ if(e.key === "Enter") login(); });
+$("api").addEventListener("keydown", function(e){ if(e.key === "Enter") login(); });
+$("api").addEventListener("change", function(){
+  var custom = $("api").value.trim();
+  API = (custom || DEFAULT_API).replace(/\/+$/,"");
+  if(custom) localStorage.setItem("hxdao_api", API); else localStorage.removeItem("hxdao_api");
+  checkBackend();
+});
+
+/* 后端状态自检：打开页面即探测，避免「退回表单/没反应」时看不到真正原因 */
+function setStatus(text, color){
+  var s = $("api-status");
+  if(!s){
+    var msg = $("login-msg");
+    s = document.createElement("div");
+    s.id = "api-status"; s.className = "msg";
+    if(msg && msg.parentNode) msg.parentNode.insertBefore(s, msg.nextSibling);
+    else document.body.appendChild(s);
+  }
+  s.textContent = text;
+  s.style.color = color || "#57606a";
+}
+function checkBackend(){
+  setStatus("正在检测后端状态…", "#57606a");
+  fetch(API + "/api/teacher", {
+    method:"POST", cache:"no-store",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ key:"" })
+  }).then(function(r){
+    if(r.status === 503)      setStatus("⚠️ 后端在线，但未设置教师口令 — 需在 Cloudflare 执行 wrangler secret put TEACHER_KEY", "#e8a300");
+    else if(r.status === 401) setStatus("✅ 后端在线、口令已就绪，请输入口令登录", "#1aa15a");
+    else                      setStatus("⚠️ 后端返回异常 HTTP " + r.status, "#e8a300");
+  }).catch(function(e){
+    setStatus("❌ 连不上后端（" + (e.message||e) + "）— 请确认网络或「后端地址」是否正确", "#d64545");
+  });
+}
+checkBackend();
+
+function login(){
+  var btn = $("login-btn");
+  var key = $("key").value.trim();
+  if(!key){ showMsg("请输入教师口令","err"); return; }
+
+  var custom = $("api").value.trim();
+  API = (custom || DEFAULT_API).replace(/\/+$/,"");
+  if(custom) localStorage.setItem("hxdao_api", API); else localStorage.removeItem("hxdao_api");
+
+  btn.disabled = true;
+  btn.textContent = "验证中…";
+  fetch(API + "/api/teacher", {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ key: key })
+  }).then(function(r){
+    return r.json().then(function(j){ return { code:r.status, body:j }; });
+  }).then(function(res){
+    if(res.code === 200){
+      TKEY = key;
+      sessionStorage.setItem("hxdao_tkey", TKEY);
+      enterApp();
+    } else if(res.code === 503){
+      showMsg("服务端尚未设置教师口令，请在 Cloudflare 上执行 wrangler secret put TEACHER_KEY","err");
+    } else {
+      showMsg("口令不正确","err");
+      $("key").value = "";
+      $("key").focus();
+    }
+  }).catch(function(e){
+    showMsg("连不上后端（" + API + "）：" + (e.message || e), "err");
+  }).finally(function(){
+    btn.disabled = false;
+    btn.textContent = "进入看板";
+  });
+}
+
+function enterApp(){
+  $("login").style.display = "none";
+  $("app").style.display = "block";
+  $("tag-api").textContent = API.replace(/^https?:\/\//,"");
+  loadStats();
+}
+
+/* ---------- 拉取统计 ---------- */
+function loadStats(){
+  return fetch(API + "/api/teacher/stats", {
+    cache:"no-store",
+    headers:{ "X-Teacher-Key": TKEY }
+  }).then(function(r){
+    if(r.status === 401){
+      sessionStorage.removeItem("hxdao_tkey");
+      TKEY = "";
+      showLoginAgain("登录状态已失效，请重新输入口令");
+      throw new Error("unauthorized");
+    }
+    if(r.status === 503) throw new Error("服务端未绑定数据库（D1），请检查 wrangler.toml");
+    if(!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  }).then(render).catch(function(e){
+    if(e.message === "unauthorized") return;
+    var t = $("tag-db");
+    t.textContent = "数据加载失败：" + e.message;
+    t.style.color = "#d64545";
+    $("stu-empty").style.display = "block";
+    $("stu-empty").innerHTML = "<b>数据加载失败</b>" + esc(e.message);
+    renderEmptyCards();
+  });
+}
+
+function showLoginAgain(msg){
+  $("app").style.display = "none";
+  $("login").style.display = "flex";
+  showMsg(msg, "err");
+}
+
+function renderEmptyCards(){
+  $("cards").innerHTML =
+    '<div class="card"><div class="k">学生人数</div><div class="v">—</div></div>';
+  $("bands").innerHTML = '<div style="color:#8b949e;font-size:13px;width:100%;text-align:center">暂无数据</div>';
+  $("dims").innerHTML = "";
+}
+
+function render(d){
+  var tag = $("tag-db");
+  tag.textContent = "数据库已连接 · 累计 " + d.totalRecords + " 条记录";
+  tag.style.color = "#1aa15a";
+
+  /* 概览卡 */
+  var cards = $("cards");
+  var avg = d.byDate && d.byDate.length ? d.byDate[d.byDate.length - 1].avg_rate : null;
+  var latestN = d.byDate && d.byDate.length ? d.byDate[d.byDate.length - 1].n : 0;
+  cards.innerHTML =
+    card("学生人数", d.totalStudents, "人") +
+    card("累计记录", d.totalRecords, "条") +
+    card("最近一次交卷", latestN, "人") +
+    card("最近平均正确率", avg === null ? "—" : avg, avg === null ? "" : "%");
+
+  /* 分数段 */
+  var maxN = 0;
+  d.bands.forEach(function(b){ if(b.n > maxN) maxN = b.n; });
+  $("bands").innerHTML = d.bands.map(function(b){
+    var h = maxN ? Math.max(3, Math.round(b.n / maxN * 120)) : 3;
+    var color = b.min >= 80 ? "#1aa15a" : b.min >= 60 ? "#e8a300" : "#d64545";
+    return '<div class="band">' +
+      '<div class="n">' + b.n + '</div>' +
+      '<div class="bar" style="height:' + h + 'px;background:' + color + '"></div>' +
+      '<div class="lb">' + esc(b.label) + '</div>' +
+      '</div>';
+  }).join("");
+
+  /* 四维 */
+  var tips = {
+    "知识":"概念与原理的掌握",
+    "能力":"分析与应用题的处理",
+    "素养":"职业规范与伦理意识",
+    "规划":"学习计划与自我管理"
+  };
+  var dimKeys = ["知识","能力","素养","规划"];
+  var dimKeys2 = { "知识":"k", "能力":"a", "素养":"l", "规划":"p" };
+  $("dims").innerHTML = dimKeys.map(function(k){
+    var v = d.dimAvg[k] || 0;
+    var color = v >= 80 ? "#1aa15a" : v >= 60 ? "#e8a300" : "#d64545";
+    return '<div class="dim"><div class="t"><span>' + k + '</span><b style="color:' + color + '">' + v + '</b></div>' +
+      '<div class="track"><i style="width:' + Math.max(2, v) + '%;background:' + color + '"></i></div>' +
+      '<div class="tip">' + esc(tips[k]) + '</div></div>';
+  }).join("");
+
+  /* 名单 */
+  var body = $("stu-body");
+  body.innerHTML = d.students.map(function(s){
+    var rate = Number(s.rate) || 0;
+    var cls = rate >= 80 ? "g" : rate >= 60 ? "m" : "b";
+    return "<tr>" +
+      "<td>" + esc(s.sid) + "</td>" +
+      "<td>" + esc(s.name || "—") + "</td>" +
+      "<td>" + esc(s.score) + "/" + esc(s.total) + "</td>" +
+      '<td class="rate"><span class="pill ' + cls + '">' + rate + '%</span></td>' +
+      "<td>" + esc(s.k) + "</td><td>" + esc(s.a) + "</td>" +
+      "<td>" + esc(s.l) + "</td><td>" + esc(s.p) + "</td>" +
+      "<td>" + esc(s.wrong) + "</td>" +
+      "<td>" + esc(s.date) + "</td>" +
+      "</tr>";
+  }).join("");
+  $("stu-empty").style.display = d.students.length ? "none" : "block";
+  $("stu-count").textContent = d.students.length ? "共 " + d.students.length + " 人，按正确率从低到高排列" : "";
+
+  /* 趋势 */
+  $("trend-body").innerHTML = (d.byDate || []).map(function(r){
+    return "<tr><td>" + esc(r.date) + "</td><td>" + esc(r.n) + "</td><td>" +
+      esc(r.avg_rate) + "%</td><td>" + esc(r.k) + "</td><td>" + esc(r.a) +
+      "</td><td>" + esc(r.l) + "</td><td>" + esc(r.p) + "</td></tr>";
+  }).join("");
+  $("trend-empty").style.display = (d.byDate && d.byDate.length) ? "none" : "block";
+  $("trend-title").style.display = (d.byDate && d.byDate.length) ? "flex" : "none";
+}
+
+function card(k, v, u){
+  return '<div class="card"><div class="k">' + esc(k) + '</div><div class="v">' +
+    esc(v) + (u ? '<span class="u">' + esc(u) + '</span>' : '') + '</div></div>';
+}
+
+/* ---------- 导出 CSV ---------- */
+$("csv-btn").addEventListener("click", function(){
+  // fetch 拿 blob 后用 a[download] 触发，浏览器才会当附件存下来
+  fetch(API + "/api/teacher/export", { headers:{ "X-Teacher-Key": TKEY } })
+    .then(function(r){
+      if(!r.ok) throw new Error("HTTP " + r.status);
+      return r.blob();
+    })
+    .then(function(b){
+      var url = URL.createObjectURL(b);
+      var a = document.createElement("a");
+      var d = new Date();
+      var stamp = d.getFullYear() + String(d.getMonth()+1).padStart(2,"0") + String(d.getDate()).padStart(2,"0");
+      a.href = url;
+      a.download = "会小导学情报告_" + stamp + ".csv";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+    })
+    .catch(function(e){ alert("导出失败：" + (e.message || e)); });
+});
+
+$("refresh-btn").addEventListener("click", loadStats);
+$("logout-btn").addEventListener("click", function(){
+  sessionStorage.removeItem("hxdao_tkey");
+  TKEY = "";
+  $("key").value = "";
+  $("app").style.display = "none";
+  $("login").style.display = "flex";
+  showMsg("", "err");
+  $("login-msg").className = "msg";
+});
+
+/* 已保存口令则直接进看板（失败要显示原因，不再静默退回表单） */
+if(TKEY){
+  $("key").value = TKEY;
+  fetch(API + "/api/teacher", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ key: TKEY })
+  }).then(function(r){
+    if(r.ok){ enterApp(); }
+    else {
+      sessionStorage.removeItem("hxdao_tkey"); TKEY = "";
+      if(r.status === 503) showMsg("自动登录失败：服务端未设置教师口令，请手动输入或检查 Cloudflare 配置", "err");
+      else if(r.status === 401) showMsg("保存的口令已失效，请重新输入", "err");
+      else showMsg("自动登录失败（HTTP " + r.status + "），请重新输入口令", "err");
+    }
+  }).catch(function(e){
+    sessionStorage.removeItem("hxdao_tkey"); TKEY = "";
+    showMsg("自动登录失败，连不上后端：" + (e.message||e) + "。请手动输入口令或检查后端地址。", "err");
+  });
+}
+</script>
+</body>
+</html>
