@@ -146,8 +146,6 @@
     <button class="nav-item" onclick="nav('practice')">📝 习题练习</button>
     <button class="nav-item" onclick="nav('ask')">💬 智能问答</button>
     <button class="nav-item" onclick="nav('exam')">🎯 智能考核</button>
-    <button class="nav-item" onclick="nav('survey')">📋 使用问卷</button>
-
     <div class="user-box">
       <div class="uname" id="side-name">—</div>
       <div id="side-id" style="color:var(--sub)">—</div>
@@ -280,11 +278,6 @@
     </section>
   </div>
 </div>
-
-    <!-- 使用问卷（iframe 嵌入 survey.html，同源共享登录态） -->
-    <section id="page-survey" class="hidden">
-      <iframe src="survey.html" style="width:100%;height:82vh;border:none;border-radius:14px;background:#fff"></iframe>
-    </section>
 
 <div id="toast"></div>
 
@@ -439,7 +432,7 @@ async function doReg(){
   if(!id||!name||!p){return toast("请填写完整信息")}
   if(p!==p2){return toast("两次密码不一致")}
   const ph=hash(p);
-  let done=false;
+  let done=false, cloudErr=false;
   try{
     if(typeof fetch==="function" && location.protocol!=="file:"){
       const r=await fetch(API_BASE+"/api/register",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sid:id,name:name,pwd:ph})});
@@ -447,7 +440,7 @@ async function doReg(){
       else if(r.status===409){return toast("该学号已注册，请直接登录");}
       else{const d=await r.json().catch(function(){return{}});return toast(d.error||"注册失败，请稍后重试");}
     }
-  }catch(e){}
+  }catch(e){cloudErr=true;}
   if(!done){
     let u=users();
     if(u.find(function(x){return x.id===id})){return toast("该学号已注册，请直接登录")}
@@ -456,13 +449,13 @@ async function doReg(){
   // 无论云端是否成功，都把账号写进本地（方便离线登录与平滑迁移）
   let u=users();
   if(!u.find(function(x){return x.id===id})){u.push({id:id,name:name,pwd:ph});saveUsers(u);}
-  toast("注册成功，请登录");showLogin();
+  toast(cloudErr ? "注册成功（已存入本机，云端暂未同步，请检查网络）" : "注册成功，请登录");showLogin();
 }
 async function doLogin(){
   const id=$("#login-user").value.trim(), p=$("#login-pwd").value;
   if(!id||!p) return toast("请输入学号和密码");
   const ph=hash(p);
-  let ok=false, name=null;
+  let ok=false, name=null, cloudErr=false;
   try{
     if(typeof fetch==="function" && location.protocol!=="file:"){
       const r=await fetch(API_BASE+"/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sid:id,pwd:ph})});
@@ -477,13 +470,13 @@ async function doLogin(){
         }
       }
     }
-  }catch(e){}
+  }catch(e){cloudErr=true;}
   if(!ok){
     // 离线或云端失败且无本地账号 → 退回本地校验
     const u=users().find(function(x){return x.id===id&&x.pwd===ph});
     if(u){ok=true;name=u.name;}
   }
-  if(!ok) return toast("账号或密码错误");
+  if(!ok) return toast(cloudErr ? "无法连接云端，且本机无该账号 — 请检查网络或后端地址（点右上角状态可设置）" : "账号或密码错误");
   localStorage.setItem(S_KEY,JSON.stringify({id:id,name:name,pwd:ph}));
   enter();   // 先用本地缓存秒开 App（离线/云慢也立即可用）
   // 后台拉云端记录覆盖本地并刷新 → 跨设备同步（失败静默降级，不影响使用）
@@ -507,7 +500,7 @@ function enter(){
 function nav(p){
   document.querySelectorAll("section[id^='page-']").forEach(function(s){s.classList.add("hidden")});
   $("#page-"+p).classList.remove("hidden");
-  const map={home:0,checkin:1,practice:2,ask:3,exam:4,survey:5};
+  const map={home:0,checkin:1,practice:2,ask:3,exam:4};
   document.querySelectorAll(".nav-item").forEach(function(b){b.classList.remove("active")});
   document.querySelectorAll(".nav-item")[map[p]].classList.add("active");
 }
@@ -683,7 +676,7 @@ function checkOnline(){
     LAST_ERROR=String(e.message||e);
     ONLINE=false;
     setEngineTag("● 离线模式（本地知识库）— 点此设置后端","#e8a300");
-    const t=$("#online-tag");if(t){t.style.cursor="pointer";t.title="点击设置后端服务地址";t.onclick=engineSettings}
+    const t=$("#online-tag");if(t){t.style.cursor="pointer";t.title="点击设置后端服务地址\n尝试连接：" + API_BASE + "\n错误：" + LAST_ERROR;t.onclick=engineSettings}
   });
 }
 function sendAsk(){
