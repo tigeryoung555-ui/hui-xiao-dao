@@ -150,7 +150,10 @@
     <div class="user-box">
       <div class="uname" id="side-name">—</div>
       <div id="side-id" style="color:var(--sub)">—</div>
-      <button class="btn ghost sm" style="margin-top:10px" onclick="logout()">退出登录</button>
+      <button class="btn ghost sm" style="margin-top:10px" onclick="exportOfflineReports()">📤 导出待上传成绩</button>
+      <button class="btn ghost sm" style="margin-top:6px" onclick="pickImportReports()">📥 导入成绩并上传</button>
+      <input type="file" id="import-file" accept=".json,application/json" multiple style="display:none">
+      <button class="btn ghost sm" style="margin-top:6px" onclick="logout()">退出登录</button>
       <a href="teacher.html" style="display:block;margin-top:8px;font-size:12px;color:var(--sub);text-decoration:none;text-align:center;">教师入口 →</a>
     </div>
   </div>
@@ -424,9 +427,12 @@ function dequeuePending(p){
 }
 function setSyncTip(ok,msg){
   const el=$("#exam-sync-tip");
-  if(!el)return;
-  el.textContent=msg;
-  el.style.color=ok?"var(--sub)":"#c0392b";
+  if(el){
+    el.textContent=msg;
+    el.style.color=ok?"var(--sub)":"#c0392b";
+  }
+  const act=$("#exam-sync-actions");
+  if(act) act.style.display=ok?"none":"flex";   // 失败时才给「重试 / 导出」操作
 }
 function postReport(p){
   return fetch(API_BASE+"/api/report",{
@@ -438,20 +444,126 @@ function postReport(p){
     return true;
   });
 }
-function flushPendingReports(){
-  if(typeof fetch!=="function"||location.protocol==="file:")return;
+/* 补传：verbose=true 时给出完整结果（手动重试/导入后用） */
+function flushPendingReports(verbose){
+  if(typeof fetch!=="function"||location.protocol==="file:"){
+    if(verbose){
+      const n=pendingReports().length;
+      toast(n ? ("当前为本地文件/离线模式，无法联网。共 "+n+" 条待上传，请先「导出待上传成绩」，再到线上学生端「导入成绩并上传」。")
+              : "当前没有待上传成绩");
+    }
+    return;
+  }
   const list=pendingReports();
-  if(!list.length)return;
-  let ok=0,settled=0;
+  if(!list.length){ if(verbose) toast("没有待上传成绩，全部已同步 ✓"); return; }
+  let ok=0,fail=0,settled=0;
+  const doneKeys={};
   list.forEach(function(p){
-    postReport(p).then(function(){dequeuePending(p);ok++;})
-    .catch(function(){})
-    .then(function(){
-      settled++;
-      if(settled===list.length&&ok>0)toast("已补传 "+ok+" 条成绩给任课教师");
-    });
+    postReport(p).then(function(){ ok++; doneKeys[pKey(p)]=1; })
+      .catch(function(){ fail++; })
+      .then(function(){
+        settled++;
+        if(settled!==list.length) return;
+        // 全部结束后一次性写回，避免并发 dequeue 互相覆盖
+        savePending(pendingReports().filter(function(x){return !doneKeys[pKey(x)]}));
+        if(verbose) toast("补传完成：成功 "+ok+" 条"+(fail?("，失败 "+fail+" 条（已保留，稍后自动重试）"):""));
+        else if(ok>0) toast("已补传 "+ok+" 条成绩给任课教师");
+      });
   });
 }
+
+/* ===== 离线成绩：导出 → 线上导入补传 ===== */
+/* 本地文件(file://)与线上(https://)的 localStorage 不共享，离线端答的卷
+   无法自动补传。这里提供人工兜底：导出 JSON → 在线上页面导入并 POST /api/report。 */
+function exportOfflineReports(){
+  const list=pendingReports();
+  if(!list.length){ toast("没有待上传成绩（都已同步）"); return; }
+  const payload={type:"hxdao_offline_reports",version:1,exportedAt:new Date().toISOString(),count:list.length,reports:list};
+  const txt=JSON.stringify(payload,null,2);
+  let url=null;
+  try{
+    const blob=new Blob([txt],{type:"application/json"});
+    if(typeof URL!=="undefined" && typeof URL.createObjectURL==="function") url=URL.createObjectURL(blob);
+  }catch(e){ url=null; }
+  let sid="all";
+  try{ const s=JSON.parse(localStorage.getItem(S_KEY)); if(s&&s.id) sid=String(s.id); }catch(e){}
+  const a=document.createElement("a");
+  a.href=url||("data:application/json;charset=utf-8,"+encodeURIComponent(txt));  // 老环境/沙箱降级
+  a.download="会小导_待上传成绩_"+sid+"_"+new Date().toISOString().slice(0,10)+".json";
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  if(url) setTimeout(function(){ try{ URL.revokeObjectURL(url); }catch(e){} },1000);
+  toast("已导出 "+list.length+" 条待上传成绩 — 请在线上学生端用「导入成绩并上传」补交");
+}
+/* 纯函数：兼容 {type,reports:[...]} / 裸数组 / 单条对象，过滤非法数据 */
+function parseImportedReports(text){
+  let d;
+  try{ d=JSON.parse(text); }catch(e){ return []; }
+  let arr=null;
+  if(Array.isArray(d)) arr=d;
+  else if(d && Array.isArray(d.reports)) arr=d.reports;
+  else if(d && typeof d==="object" && d.sid!==undefined) arr=[d];
+  else return [];
+  const out=[];
+  arr.forEach(function(p){
+    if(!p || typeof p!=="object") return;
+    const sid=p.sid==null?"":String(p.sid).trim();
+    if(!sid) return;
+    const score=Number(p.score), total=Number(p.total);
+    if(!isFinite(score)||!isFinite(total)||total<=0) return;
+    const dims={};
+    if(p.dims && typeof p.dims==="object"){
+      Object.keys(p.dims).forEach(function(k){ const v=Number(p.dims[k]); if(isFinite(v)) dims[k]=v; });
+    }
+    const date=/^\d{4}-\d{2}-\d{2}$/.test(String(p.date||"")) ? String(p.date) : new Date().toISOString().slice(0,10);
+    const w=Number(p.wrong);
+    out.push({ sid:sid, name:String(p.name||""), score:score, total:total,
+      dims:dims, wrong:isFinite(w)?w:Math.max(0,total-score), date:date });
+  });
+  return out;
+}
+function readFileText(f){
+  return new Promise(function(resolve,reject){
+    if(typeof FileReader==="undefined"){ reject(new Error("浏览器不支持读取文件")); return; }
+    const fr=new FileReader();
+    fr.onload=function(){ resolve(String(fr.result||"")); };
+    fr.onerror=function(){ reject(new Error("读取失败："+(f&&f.name||"未知文件"))); };
+    try{ fr.readAsText(f,"utf-8"); }catch(e){ reject(e); }
+  });
+}
+function handleImportReports(files){
+  const list=Array.prototype.slice.call(files||[]);
+  if(!list.length) return;
+  Promise.all(list.map(function(f){ return readFileText(f).catch(function(){ return ""; }); }))
+    .then(function(texts){
+      let added=0,bad=0;
+      const seen={};
+      texts.forEach(function(t){
+        if(!t){ bad++; return; }
+        const arr=parseImportedReports(t);
+        if(!arr.length){ bad++; return; }
+        arr.forEach(function(p){
+          const k=pKey(p);
+          if(seen[k]) return;
+          seen[k]=1; enqueuePending(p); added++;
+        });
+      });
+      if(!added){ toast(bad ? ("未识别到有效成绩（"+bad+" 个文件），请确认是本系统导出的 JSON") : "文件中没有可导入的成绩"); return; }
+      toast("已导入 "+added+" 条成绩，正在上传…"+(bad?("（"+bad+" 个文件无法识别）"):""));
+      flushPendingReports(true);
+    });
+}
+function pickImportReports(){
+  const el=$("#import-file");
+  if(!el) return;
+  el.value="";
+  el.click();
+}
+function retryUploadNow(){ flushPendingReports(true); }
+/* 静态 input，脚本位于 body 末尾，DOM 已就绪 */
+(function(){
+  const el=$("#import-file");
+  if(el) el.addEventListener("change",function(){ handleImportReports(el.files); });
+})();
 function reportScore(score,total,dims,wrong){
   let s;try{s=JSON.parse(localStorage.getItem(S_KEY))}catch(e){s=null}
   if(!s||!s.id){setSyncTip(false,"⚠️ 未登录，本次成绩仅保存在本机，未同步给任课教师。");return}
@@ -464,7 +576,7 @@ function reportScore(score,total,dims,wrong){
   };
   enqueuePending(p);   // 先入队：请求途中关页也不会丢
   if(typeof fetch!=="function"||location.protocol==="file:"){
-    setSyncTip(false,"⚠️ 当前为本地文件/离线模式，成绩仅保存在本机、未同步给任课教师。请用线上网址打开学生端重新交卷（本地文件与线上不共享数据）。");
+    setSyncTip(false,"⚠️ 当前为本地文件/离线模式，成绩仅保存在本机、未同步给任课教师。无需重做：点下方「导出待上传成绩」保存 JSON，再到线上学生端用「导入成绩并上传」补交即可（本地文件与线上页面数据不共享）。");
     return;
   }
   postReport(p).then(function(){
@@ -728,8 +840,19 @@ function checkOnline(){
   }).catch(function(e){
     LAST_ERROR=String(e.message||e);
     ONLINE=false;
-    setEngineTag("● 离线模式（本地知识库）— 点此设置后端","#e8a300");
-    const t=$("#online-tag");if(t){t.style.cursor="pointer";t.title="点击设置后端服务地址\n尝试连接：" + API_BASE + "\n错误：" + LAST_ERROR;t.onclick=engineSettings}
+    const n=pendingReports().length;
+    setEngineTag(
+      location.protocol==="file:"
+        ? ("● 离线模式（本地文件）— 成绩不会自动上传"+(n?"（待上传 "+n+" 条，请导出）":""))
+        : "● 离线模式（本地知识库）— 点此设置后端",
+      "#e8a300");
+    const t=$("#online-tag");
+    if(t){
+      t.style.cursor="pointer";
+      t.title="点击设置后端服务地址\n尝试连接：" + API_BASE + "\n错误：" + LAST_ERROR +
+        (n ? ("\n⚠️ 待上传成绩："+n+" 条 — 网络恢复后自动补传；本地文件请用侧边栏「导出待上传成绩」，再到线上学生端「导入成绩并上传」") : "");
+      t.onclick=engineSettings;
+    }
   });
 }
 function sendAsk(){
@@ -874,6 +997,10 @@ function gradeExam(){
   let html2='<h3>📊 考核结果</h3><div class="radar-wrap"><div id="radar-exam"></div><div class="dim-list"></div></div>';
   html2+='<p style="margin-top:14px">总分正确率 <b style="color:#2f6fed">'+right+'/'+QUIZ.length+'</b>（'+Math.round(right/QUIZ.length*100)+'%）。</p>';
   html2+='<p id="exam-sync-tip" style="margin-top:6px;font-size:12px;color:var(--sub)">📌 正在同步成绩给任课教师…</p>';
+  html2+='<div id="exam-sync-actions" style="margin-top:8px;display:none;gap:8px;flex-wrap:wrap">' +
+    '<button class="btn ghost sm" onclick="retryUploadNow()">🔄 重试上传</button>' +
+    '<button class="btn ghost sm" onclick="exportOfflineReports()">📤 导出成绩（离线时用）</button>' +
+    '</div>';
   html2+='<div id="exam-diagnosis" style="margin-top:14px;padding:14px;border-radius:10px;background:#f6f8fc;font-size:14px">智能体正在生成个性化诊断…</div>';
   $("#exam-box").innerHTML=html2;
   reportScore(right,QUIZ.length,dims,QUIZ.length-right);   // 结果页渲染后再上报，状态行才能更新
